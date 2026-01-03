@@ -154,4 +154,8 @@ io.on('exit_request', () => {
 const PORT = 7681;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Web 终端服务已启动: http://localhost:${PORT}`);
+  console.log('========================================');
+  console.log('警告：使用本工具产生的所有后果由您自行承担！');
+  console.log('请谨慎操作，避免执行危险命令！');
+  console.log('========================================');
 });
