@@ -12,6 +12,7 @@ app.use(express.static('public'));
 // 单例pty进程，避免资源泄漏
 let ptyProcess = null;
 let currentSocket = null;
+let ptyDataListener = null;
 
 function createPtyProcess(cols = 80, rows = 30) {
   // 如果已存在进程，先清理
@@ -52,6 +53,13 @@ function createPtyProcess(cols = 80, rows = 30) {
   return ptyProcess;
 }
 
+function cleanupPtyListener() {
+  if (ptyProcess && ptyDataListener) {
+    ptyProcess.removeListener('data', ptyDataListener);
+    ptyDataListener = null;
+  }
+}
+
 function cleanup() {
   if (ptyProcess) {
     try {
@@ -81,12 +89,16 @@ io.on('connection', (socket) => {
     ptyProcess = createPtyProcess();
   }
 
-  // 发送pty输出到客户端
-  ptyProcess.on('data', (data) => {
+  // 清理旧的监听器（如果有）
+  cleanupPtyListener();
+
+  // 发送pty输出到客户端 - 只添加一次监听器
+  ptyDataListener = (data) => {
     if (currentSocket && currentSocket.connected) {
       socket.emit('output', data);
     }
-  });
+  };
+  ptyProcess.on('data', ptyDataListener);
 
   // 接收客户端输入
   socket.on('input', (data) => {
@@ -112,6 +124,7 @@ io.on('connection', (socket) => {
     console.log('客户端已断开连接:', reason);
     if (currentSocket === socket) {
       currentSocket = null;
+      cleanupPtyListener();
     }
     // 不立即清理pty进程，允许重连
   });
