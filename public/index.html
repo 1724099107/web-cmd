@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web 终端</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      background: #1e1e1e;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .header {
+      background: #2d2d2d;
+      color: #fff;
+      padding: 10px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #3e3e3e;
+    }
+    .header h1 {
+      font-size: 18px;
+      font-weight: 500;
+    }
+    .status {
+      font-size: 12px;
+      color: #4caf50;
+    }
+    .status.disconnected {
+      color: #f44336;
+    }
+    #terminal {
+      flex: 1;
+      padding: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Web 终端 - CMD</h1>
+    <div style="display: flex; align-items: center; gap: 15px;">
+      <span class="status" id="status">已连接</span>
+      <button id="exitBtn" style="background: #f44336; color: white; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer; font-size: 12px;">退出</button>
+    </div>
+  </div>
+  <div id="terminal"></div>
+
+  <script>
+    const term = new Terminal({
+      cursorBlink: true,
+      fontSize: 14,
+      fontFamily: 'Consolas, "Courier New", monospace',
+      theme: {
+        background: '#1e1e1e',
+        foreground: '#d4d4d4',
+        cursor: '#ffffff'
+      },
+      allowProposedApi: true
+    });
+
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+
+    term.open(document.getElementById('terminal'));
+    fitAddon.fit();
+
+    const socket = io({
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 10000
+    });
+    const statusEl = document.getElementById('status');
+
+    socket.on('connect', () => {
+      statusEl.textContent = '已连接';
+      statusEl.classList.remove('disconnected');
+      // 发送心跳
+      setInterval(() => {
+        if (socket.connected) {
+          socket.emit('ping');
+        }
+      }, 30000);
+    });
+
+    socket.on('pong', () => {
+      // 心跳响应
+    });
+
+    socket.on('disconnect', (reason) => {
+      statusEl.textContent = '已断开';
+      statusEl.classList.add('disconnected');
+      console.log('断开原因:', reason);
+    });
+
+    socket.on('connect_error', (error) => {
+      console.error('连接错误:', error);
+      statusEl.textContent = '连接失败';
+      statusEl.classList.add('disconnected');
+    });
+
+    socket.on('reconnect', (attemptNumber) => {
+      console.log('重连成功，尝试次数:', attemptNumber);
+      term.writeln('\r\n已重新连接\r\n');
+    });
+
+    socket.on('reconnect_attempt', (attemptNumber) => {
+      console.log('尝试重连:', attemptNumber);
+      statusEl.textContent = `重连中 (${attemptNumber})`;
+    });
+
+    socket.on('reconnect_failed', () => {
+      console.error('重连失败');
+      statusEl.textContent = '重连失败';
+      term.writeln('\r\n重连失败，请刷新页面\r\n');
+    });
+
+    socket.on('output', (data) => {
+      term.write(data);
+    });
+
+    // 输入防抖机制，减少频繁的socket发送
+    let inputBuffer = '';
+    let inputTimeout = null;
+    term.onData((data) => {
+      // 对于特殊字符（回车、Ctrl+C等）立即发送
+      if (data.charCodeAt(0) < 32 || data === '\r' || data === '\n') {
+        if (inputBuffer) {
+          socket.emit('input', inputBuffer);
+          inputBuffer = '';
+        }
+        socket.emit('input', data);
+      } else {
+        inputBuffer += data;
+        // 防抖：50ms内没有新输入则发送缓冲区
+        clearTimeout(inputTimeout);
+        inputTimeout = setTimeout(() => {
+          if (inputBuffer) {
+            socket.emit('input', inputBuffer);
+            inputBuffer = '';
+          }
+        }, 50);
+      }
+    });
+
+    // resize节流机制
+    let resizeTimeout = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(() => {
+        fitAddon.fit();
+        socket.emit('resize', {
+          cols: term.cols,
+          rows: term.rows
+        });
+      }, 100);
+    });
+
+    // 添加复制粘贴功能
+    term.attachCustomKeyEventHandler((event) => {
+      // Ctrl+C 或 Ctrl+Insert 复制
+      if ((event.ctrlKey || event.metaKey) && (event.key === 'c' || event.key === 'Insert')) {
+        const selection = term.getSelection();
+        if (selection) {
+          navigator.clipboard.writeText(selection);
+          event.preventDefault();
+        }
+      }
+      // Ctrl+V 或 Shift+Insert 粘贴
+      if ((event.ctrlKey || event.metaKey) && event.key === 'v') {
+        navigator.clipboard.readText().then(text => {
+          socket.emit('input', text);
+        });
+        event.preventDefault();
+      }
+      if (event.shiftKey && event.key === 'Insert') {
+        navigator.clipboard.readText().then(text => {
+          socket.emit('input', text);
+        });
+        event.preventDefault();
+      }
+      return true;
+    });
+
+    term.focus();
+
+    // 退出按钮点击事件
+    document.getElementById('exitBtn').addEventListener('click', () => {
+      socket.emit('exit_request');
+      setTimeout(() => {
+        window.close();
+      }, 500);
+    });
+
+    // 页面关闭时也发送退出请求
+    window.addEventListener('beforeunload', () => {
+      socket.emit('exit_request');
+    });
+  </script>
+</body>
+</html>
